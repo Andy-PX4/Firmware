@@ -1,6 +1,6 @@
 /****************************************************************************
  *
- *   Copyright (c) 2017 PX4 Development Team. All rights reserved.
+ *   Copyright (C) 2020 PX4 Development Team. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -31,50 +31,68 @@
  *
  ****************************************************************************/
 
-/**
- * @file board_config.h
- *
- * Aerotenna Ocpoc internal definitions
- */
+#include <board_config.h>
 
-#pragma once
+#include <drivers/drv_adc.h>
 
-#define BOARD_OVERRIDE_UUID "OCPOC00000000000" // must be of length 16
-#define PX4_SOC_ARCH_ID     PX4_SOC_ARCH_ID_OCPOC
+#include <px4_platform_common/log.h>
 
-#define BOARD_BATTERY1_V_DIV   (10.177939394f)
+#include <fcntl.h>
+#include <stdint.h>
+#include <unistd.h>
 
-#define BOARD_HAS_NO_RESET
-#define BOARD_HAS_NO_BOOTLOADER
+#define ADC_SYSFS_PATH "/sys/bus/iio/devices/iio:device0"
+#define ADC_MAX_CHAN 9
+int _channels_fd[ADC_MAX_CHAN];
 
-#define BOARD_MAX_LEDS 1 // Number of external LED's this board has
+int px4_arch_adc_init(uint32_t base_address)
+{
+	for (int i = 0; i < ADC_MAX_CHAN; i++) {
+		_channels_fd[i] = -1;
+	}
 
+	return 0;
+}
 
-// I2C
-#define PX4_I2C_BUS_EXPANSION  2 // i2c-2: Air Data Probe or I2C Splitter
-#define PX4_I2C_BUS_EXPANSION1 4 // i2c-4: GPS/Compass #1
-#define PX4_I2C_BUS_EXPANSION2 5 // i2c-5: GPS/Compass #2
-#define PX4_I2C_BUS_EXPANSION3 3 // i2c-3: GPS/Compass #3
+void px4_arch_adc_uninit(uint32_t base_address)
+{
+	for (int i = 0; i < ADC_MAX_CHAN; i++) {
+		::close(_channels_fd[i]);
+		_channels_fd[i] = -1;
+	}
+}
 
-#define PX4_NUMBER_I2C_BUSES   4
+uint32_t px4_arch_adc_sample(uint32_t base_address, unsigned channel)
+{
+	if (channel > ADC_MAX_CHAN) {
+		PX4_ERR("channel %d out of range: %d", channel, ADC_MAX_CHAN);
+		return UINT32_MAX; // error
+	}
 
-#define PX4_I2C_BUS_LED 1
+	// open channel if necessary
+	if (_channels_fd[channel] == -1) {
+		// ADC_SYSFS_PATH
+		char channel_path[strlen(ADC_SYSFS_PATH) + 20] {};
 
-// SPI
-#define PX4_SPI_BUS_SENSORS    1
-#define PX4_SPIDEV_MPU         PX4_MK_SPI_SEL(PX4_SPI_BUS_SENSORS, 0) // spidev1.0 - mpu9250
-#define PX4_SPIDEV_BARO        PX4_MK_SPI_SEL(PX4_SPI_BUS_SENSORS, 1) // spidev1.1 - ms5611
-//#define PX4_SPIDEV_MPU2      PX4_MK_SPI_SEL(PX4_SPI_BUS_SENSORS, 2) // TODO: where is the 2nd mpu9250?
+		if (sprintf(channel_path, "%s/in_voltage%d_raw", ADC_SYSFS_PATH, channel) == -1) {
+			PX4_ERR("adc channel: %d\n", channel);
+			return UINT32_MAX; // error
+		}
 
-#define PX4_SPI_BUS_BARO PX4_SPI_BUS_SENSORS
+		_channels_fd[channel] = ::open(channel_path, O_RDONLY);
+	}
 
+	char buffer[10] {};
 
-// ADC channels:
-#define ADC_CHANNELS (8 << 0)
+	if (::pread(_channels_fd[channel], buffer, sizeof(buffer), 0) < 0) {
+		PX4_ERR("read channel %d failed", channel);
+		return UINT32_MAX; // error
+	}
 
-#define ADC_BATTERY_VOLTAGE_CHANNEL     8
-#define ADC_BATTERY_CURRENT_CHANNEL     ((uint8_t)(-1))
+	return atoi(buffer);
+}
 
-
-#include <system_config.h>
-#include <px4_platform_common/board_common.h>
+uint32_t px4_arch_adc_dn_fullcount()
+{
+	return 1 << 12; // 12 bit ADC
+}
